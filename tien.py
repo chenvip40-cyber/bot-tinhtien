@@ -23,7 +23,6 @@ async def start_web_server():
     runner = web.AppRunner(app)
     await runner.setup()
     
-    # Render tự động cấp cổng qua biến môi trường PORT
     port = int(os.environ.get("PORT", 8080))
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
@@ -51,8 +50,11 @@ DATA_FILE = 'inventory_data.json'
 def load_data():
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    return {"inventory": {}, "prices": {}, "last_msg_id": None}
+            data = json.load(f)
+            if "user_inventories" not in data:
+                data["user_inventories"] = {}
+            return data
+    return {"inventory": {}, "prices": {}, "user_inventories": {}, "last_msg_id": None}
 
 def save_data(data):
     with open(DATA_FILE, 'w', encoding='utf-8') as f:
@@ -72,8 +74,15 @@ def parse_price(price_str):
         return main
     return 0
 
+def extract_member_name(message_content, author_name):
+    # Tìm dòng dạng "Tên: Trạng" hoặc "Ten: Trang"
+    match = re.search(r'(?:Tên|Ten)\s*:\s*([^\n\r]+)', message_content, re.IGNORECASE)
+    if match:
+        return match.group(1).strip().title()
+    return author_name.strip().title()
+
 # =========================================================
-# 3. GIAO DIỆN EMBED TỒN KHO (CÓ NGÀY GIỜ CHÍNH XÁC)
+# 3. GIAO DIỆN EMBED TỒN KHO
 # =========================================================
 def create_kho_embed(inventory, prices):
     now_str = datetime.now().strftime("%d/%m/%Y lúc %H:%M:%S")
@@ -128,6 +137,36 @@ def create_kho_embed(inventory, prices):
     embed.set_footer(text="Hệ Thống Quản Lý Vật Tư Minh Bạch • HKT", icon_url="https://cdn-icons-png.flaticon.com/512/2897/2897785.png")
     return embed
 
+def create_user_kho_embed(member_name, user_inventory, prices):
+    now_str = datetime.now().strftime("%d/%m/%Y lúc %H:%M:%S")
+    
+    embed = discord.Embed(
+        title=f"👤 SỔ VẬT TƯ CÁ NHÂN - {member_name.upper()}",
+        description=f"⏱️ **Cập nhật:** `{now_str}`",
+        color=discord.Color.blue()
+    )
+    
+    total_val = 0
+    items_list = []
+    active_items = {k: v for k, v in user_inventory.items() if v > 0}
+    
+    if not active_items:
+        embed.add_field(name="📦 Dữ liệu đóng góp", value="*(Chưa có vật tư ghi nhận)*", inline=False)
+    else:
+        for item, qty in sorted(active_items.items()):
+            unit_p = prices.get(item, 0)
+            item_v = unit_p * qty
+            total_val += item_v
+            
+            val_str = f" ➔ `{item_v:,} VNĐ`" if unit_p > 0 else ""
+            items_list.append(f"🔸 **{item}**: `x{qty}`{val_str}")
+            
+        embed.add_field(name="📦 Danh sách vật tư đã nhập", value="\n".join(items_list), inline=False)
+        if total_val > 0:
+            embed.add_field(name="💎 TỔNG GIÁ TRỊ ĐÓNG GÓP", value=f"```yaml\n{total_val:,} VNĐ\n```", inline=False)
+            
+    return embed
+
 # =========================================================
 # 4. TỰ ĐỘNG CẬP NHẬT KÊNH
 # =========================================================
@@ -173,11 +212,10 @@ async def update_kho_channel(guild):
     save_data(data)
 
 # =========================================================
-# 5. LỆNH GÕ TRỰC TIẾP & SỰ KIỆN KHỞI ĐỘNG
+# 5. LỆNH GÕ TRỰC TIẾP
 # =========================================================
 @bot.event
 async def on_ready():
-    # Khởi chạy Web Server giữ Port ngay khi Bot sẵn sàng
     await start_web_server()
     print(f'✅ Bot {bot.user.name} đã sẵn sàng phục vụ!')
 
@@ -187,6 +225,39 @@ async def check_kho_cmd(ctx):
     inventory = data.get("inventory", {})
     prices = data.get("prices", {})
     embed = create_kho_embed(inventory, prices)
+    await ctx.send(embed=embed)
+
+@bot.command(name='khocanhan', aliases=['mykho', 'khonguoidung'])
+async def kho_ca_nhan_cmd(ctx, *, name: str = None):
+    data = load_data()
+    user_invs = data.get("user_inventories", {})
+    prices = data.get("prices", {})
+    
+    target_name = name.strip().title() if name else ctx.author.display_name.strip().title()
+    
+    user_inv = user_invs.get(target_name, {})
+    embed = create_user_kho_embed(target_name, user_inv, prices)
+    await ctx.send(embed=embed)
+
+@bot.command(name='bangkho')
+async def bang_kho_cmd(ctx):
+    data = load_data()
+    user_invs = data.get("user_inventories", {})
+    
+    if not user_invs:
+        await ctx.send("📋 Chưa có dữ liệu đóng góp kho cá nhân nào!")
+        return
+
+    embed = discord.Embed(
+        title="📊 TỔNG HỢP KHO CÁ NHÂN THÀNH VIÊN",
+        color=discord.Color.purple()
+    )
+    
+    for user_name, inv in user_invs.items():
+        items_summary = [f"{item}: `x{qty}`" for item, qty in inv.items() if qty > 0]
+        val_text = ", ".join(items_summary) if items_summary else "*(Kho trống)*"
+        embed.add_field(name=f"👤 {user_name}", value=val_text, inline=False)
+        
     await ctx.send(embed=embed)
 
 @bot.command(name='capnhatgia')
@@ -201,23 +272,19 @@ async def cap_nhat_gia_cmd(ctx):
 async def reset_kho_cmd(ctx):
     data = load_data()
     data["inventory"] = {}
+    data["user_inventories"] = {}
     save_data(data)
     await update_kho_channel(ctx.guild)
     
     now_str = datetime.now().strftime("%d/%m/%Y lúc %H:%M:%S")
     embed = discord.Embed(
-        title="🧹 XÁC NHẬN RESET KHO HÀNG",
-        description=f"Toàn bộ dữ liệu tồn kho đã được đưa về **0**.",
+        title="🧹 XÁC NHẬN RESET KHO HÀNG & KHO CÁ NHÂN",
+        description=f"Toàn bộ dữ liệu kho đã được đưa về **0**.",
         color=discord.Color.red()
     )
     embed.add_field(name="👤 Người thực hiện", value=ctx.author.mention, inline=True)
     embed.add_field(name="🕒 Thời điểm", value=f"`{now_str}`", inline=True)
     await ctx.send(embed=embed)
-
-@reset_kho_cmd.error
-async def reset_kho_error(ctx, error):
-    if isinstance(error, commands.MissingPermissions):
-        await ctx.send("❌ Bạn cần có quyền **Quản trị viên (Admin)** để thực hiện lệnh này!")
 
 # =========================================================
 # 6. TỰ ĐỘNG XỬ LÝ NHẬP / XUẤT
@@ -242,6 +309,12 @@ async def on_message(message):
     elif channel_name == 'vat-tu-hom-nay':
         data = load_data()
         inventory = data.setdefault("inventory", {})
+        user_inventories = data.setdefault("user_inventories", {})
+        
+        # Tự động trích xuất tên người nhập (Ví dụ từ dòng "Tên: Trạng")
+        member_name = extract_member_name(message.content, message.author.display_name)
+        user_inv = user_inventories.setdefault(member_name, {})
+        
         details = []
 
         if message.attachments and client:
@@ -260,7 +333,10 @@ async def on_message(message):
                         for qty, item_name in parsed_items:
                             qty = int(qty)
                             item_name = item_name.strip().title()
+                            
+                            # Cộng vào kho tổng & kho cá nhân
                             inventory[item_name] = inventory.get(item_name, 0) + qty
+                            user_inv[item_name] = user_inv.get(item_name, 0) + qty
                             details.append(f"🟢 **+{qty}** {item_name}")
                     except Exception as e:
                         await message.reply(f"❌ Lỗi quét ảnh: {e}")
@@ -270,7 +346,10 @@ async def on_message(message):
                 for qty, item_name in items:
                     qty = int(qty)
                     item_name = item_name.strip().title()
+                    
+                    # Cộng vào kho tổng & kho cá nhân
                     inventory[item_name] = inventory.get(item_name, 0) + qty
+                    user_inv[item_name] = user_inv.get(item_name, 0) + qty
                     details.append(f"🟢 **+{qty}** {item_name}")
 
         if details:
@@ -280,7 +359,7 @@ async def on_message(message):
                 title="📥 XÁC NHẬN PHIẾU NHẬP KHO",
                 color=discord.Color.green()
             )
-            embed.add_field(name="👤 Người thực hiện", value=message.author.mention, inline=True)
+            embed.add_field(name="👤 Người nhập kho", value=f"**{member_name}** ({message.author.mention})", inline=True)
             embed.add_field(name="🕒 Thời gian", value=f"`{now_str}`", inline=True)
             embed.add_field(name="📦 Chi tiết vật tư", value="\n".join(details), inline=False)
             await message.reply(embed=embed)
