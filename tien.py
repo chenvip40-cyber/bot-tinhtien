@@ -5,10 +5,14 @@ from datetime import datetime
 import json
 import os
 import io
+import sys
+import asyncio
 from PIL import Image
 from google import genai
-import asyncio
 from aiohttp import web
+
+# Ép Python đẩy log stdout ngay lập tức lên Dashboard Render
+sys.stdout.reconfigure(line_buffering=True)
 
 # =========================================================
 # 0. KHỞI TẠO WEB SERVER GIẢ LẬP ĐỂ GIỮ PORT RENDER (24/7)
@@ -26,7 +30,7 @@ async def start_web_server():
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
-    print(f"✅ Web Server đã lắng nghe trên Port {port}")
+    print(f"✅ Web Server đã lắng nghe thành công trên Port {port}")
 
 # =========================================================
 # 1. CẤU HÌNH THÔNG TIN BOT & BACKUP
@@ -37,7 +41,13 @@ BACKUP_CHANNEL_ID = int(os.getenv('BACKUP_CHANNEL_ID', '1557240142953975930'))
 
 client = None
 if GEMINI_API_KEY:
-    client = genai.Client(api_key=GEMINI_API_KEY)
+    try:
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        print("✅ Đã khởi tạo Gemini API Client thành công!")
+    except Exception as e:
+        print(f"❌ Lỗi khởi tạo Gemini API Client: {e}")
+else:
+    print("⚠️ CẢNH BÁO: Chưa cấu hình GEMINI_API_KEY trong Environment!")
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -45,7 +55,6 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 
 DATA_FILE = 'inventory_data.json'
 
-# Prompt AI chuyên đọc túi đồ / kho / cốp xe trong GTA5 Roleplay
 GTA5_INVENTORY_PROMPT = """
 Bạn là hệ thống kiểm đếm túi đồ trong game GTA5 Roleplay.
 Hãy nhìn vào từng ô vật phẩm trong ảnh túi đồ và liệt kê chính xác TÊN VẬT PHẨM cùng SỐ LƯỢNG.
@@ -82,11 +91,14 @@ x16 Thỏi bạc
 # =========================================================
 def load_data():
     if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-            if "user_inventories" not in data:
-                data["user_inventories"] = {}
-            return data
+        try:
+            with open(DATA_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                if "user_inventories" not in data:
+                    data["user_inventories"] = {}
+                return data
+        except Exception as e:
+            print(f"❌ Lỗi đọc file JSON: {e}")
     return {"inventory": {}, "prices": {}, "user_inventories": {}, "last_msg_id": None}
 
 def save_data(data):
@@ -277,7 +289,7 @@ async def update_kho_channel(guild):
 @bot.event
 async def on_ready():
     await restore_data_from_discord()
-    print(f'✅ Bot {bot.user.name} đã đăng nhập thành công vào Discord!')
+    print(f'✅ Bot {bot.user.name} (ID: {bot.user.id}) đã kết nối thành công!')
 
 @bot.command(name='checkkho')
 async def check_kho_cmd(ctx):
@@ -390,7 +402,11 @@ async def on_message(message):
         
         details = []
 
-        if message.attachments and client:
+        if message.attachments:
+            if not client:
+                await message.reply("❌ Bot chưa được cấu hình `GEMINI_API_KEY` để quét ảnh túi đồ!")
+                return
+
             for attachment in message.attachments:
                 if any(attachment.filename.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.webp']):
                     await message.add_reaction("🔍")
@@ -410,7 +426,8 @@ async def on_message(message):
                             user_inv[item_name] = user_inv.get(item_name, 0) + qty
                             details.append(f"🟢 **+{qty}** {item_name}")
                     except Exception as e:
-                        await message.reply(f"❌ Lỗi quét ảnh: {e}")
+                        print(f"❌ Lỗi Gemini OCR: {e}")
+                        await message.reply(f"❌ Lỗi nhận diện ảnh túi đồ: `{e}`")
         else:
             items = re.findall(r"x(\d+)\s+(.+)", message.content, re.IGNORECASE)
             if items:
@@ -462,7 +479,7 @@ async def on_message(message):
                     needed_to_deduct = qty
                     deduct_logs = []
 
-                    for u_name, u_inv in user_inventories.items():
+                    for u_name, u_inv in list(user_inventories.items()):
                         if item_name in u_inv and u_inv[item_name] > 0:
                             take = min(needed_to_deduct, u_inv[item_name])
                             u_inv[item_name] -= take
@@ -526,16 +543,28 @@ async def on_message(message):
 # 7. KHỞI CHẠY ĐỒNG THỜI BOT & WEB SERVER DÀNH CHO RENDER
 # =========================================================
 async def main():
-    if not TOKEN:
-        print("❌ Lỗi: Chưa cấu hình DISCORD_TOKEN!")
-        return
-        
-    # Mở Web Server ngay lập tức để Render detect port
-    await start_web_server()
+    print("🚀 Đang khởi động tiến trình ứng dụng...")
     
-    # Chạy Bot Discord
-    async with bot:
-        await bot.start(TOKEN)
+    if not TOKEN:
+        print("❌ LỖI NGHIÊM TRỌNG: Chưa cấu hình DISCORD_TOKEN trong Environment!")
+        return
+
+    try:
+        await start_web_server()
+    except Exception as e:
+        print(f"❌ Lỗi khởi tạo Web Server Port: {e}")
+
+    try:
+        print("🔑 Đang kết nối đến Discord Gateway...")
+        async with bot:
+            await bot.start(TOKEN)
+    except Exception as e:
+        print(f"❌ Lỗi đăng nhập Discord Bot: {e}")
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("🛑 Tiến trình đã ngắt thủ công.")
+    except Exception as e:
+        print(f"💥 Lỗi dừng chương trình: {e}")
