@@ -7,15 +7,36 @@ import os
 import io
 from PIL import Image
 from google import genai
+import asyncio
+from aiohttp import web
+
+# =========================================================
+# 0. KHỞI TẠO WEB SERVER GIẢ LẬP ĐỂ GIỮ PORT RENDER
+# =========================================================
+async def handle_ping(request):
+    return web.Response(text="Bot Discord đang hoạt động 24/7!")
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get('/', handle_ping)
+    app.router.add_get('/ping', handle_ping)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    
+    # Render tự động cấp cổng qua biến môi trường PORT
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    print(f"✅ Web Server đã khởi chạy thành công trên Port {port}")
 
 # =========================================================
 # 1. CẤU HÌNH THÔNG TIN BOT
 # =========================================================
-TOKEN = 'TOKEN_BOT_DISCORD_CỦA_BẠN'
-GEMINI_API_KEY = 'API_KEY_GEMINI_CỦA_BẠN'
+TOKEN = os.getenv('DISCORD_TOKEN')
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
 client = None
-if GEMINI_API_KEY and GEMINI_API_KEY != 'API_KEY_GEMINI_CỦA_BẠN':
+if GEMINI_API_KEY:
     client = genai.Client(api_key=GEMINI_API_KEY)
 
 intents = discord.Intents.default()
@@ -152,10 +173,12 @@ async def update_kho_channel(guild):
     save_data(data)
 
 # =========================================================
-# 5. LỆNH GÕ TRỰC TIẾP
+# 5. LỆNH GÕ TRỰC TIẾP & SỰ KIỆN KHỞI ĐỘNG
 # =========================================================
 @bot.event
 async def on_ready():
+    # Khởi chạy Web Server giữ Port ngay khi Bot sẵn sàng
+    await start_web_server()
     print(f'✅ Bot {bot.user.name} đã sẵn sàng phục vụ!')
 
 @bot.command(name='checkkho')
@@ -197,7 +220,7 @@ async def reset_kho_error(ctx, error):
         await ctx.send("❌ Bạn cần có quyền **Quản trị viên (Admin)** để thực hiện lệnh này!")
 
 # =========================================================
-# 6. TỰ ĐỘNG XỬ LÝ NHẬP / XUẤT (KÈM NGÀY GIỜ BÁO CÁO)
+# 6. TỰ ĐỘNG XỬ LÝ NHẬP / XUẤT
 # =========================================================
 @bot.event
 async def on_message(message):
@@ -330,5 +353,8 @@ async def on_message(message):
 # =========================================================
 # 7. KHỞI CHẠY BOT
 # =========================================================
-import os
-bot.run(os.getenv('DISCORD_TOKEN'))
+if __name__ == '__main__':
+    if TOKEN:
+        bot.run(TOKEN)
+    else:
+        print("❌ Lỗi: Chưa cấu hình DISCORD_TOKEN trong Environment Variables của Render!")
