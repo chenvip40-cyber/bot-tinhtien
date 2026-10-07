@@ -412,22 +412,32 @@ async def on_message(message):
                     await message.add_reaction("🔍")
                     image_bytes = await attachment.read()
                     img = Image.open(io.BytesIO(image_bytes))
-                    try:
-                        response = client.models.generate_content(
-                            model='gemini-2.5-flash',
-                            contents=[GTA5_INVENTORY_PROMPT, img]
-                        )
-                        parsed_items = re.findall(r"x(\d+)\s+(.+)", response.text, re.IGNORECASE)
-                        for qty, item_name in parsed_items:
-                            qty = int(qty)
-                            item_name = item_name.strip().title()
-                            
-                            inventory[item_name] = inventory.get(item_name, 0) + qty
-                            user_inv[item_name] = user_inv.get(item_name, 0) + qty
-                            details.append(f"🟢 **+{qty}** {item_name}")
-                    except Exception as e:
-                        print(f"❌ Lỗi Gemini OCR: {e}")
-                        await message.reply(f"❌ Lỗi nhận diện ảnh túi đồ: `{e}`")
+                    
+                    response_text = ""
+                    # Thử lần lượt các tên model của Gemini
+                    for model_name in ['gemini-2.5-flash', 'gemini-2.5-flash']:
+                        try:
+                            response = client.models.generate_content(
+                                model=model_name,
+                                contents=[GTA5_INVENTORY_PROMPT, img]
+                            )
+                            response_text = response.text
+                            break
+                        except Exception as e_model:
+                            print(f"⚠️ Thử model {model_name} thất bại: {e_model}")
+                    
+                    if not response_text:
+                        await message.reply("❌ Lỗi: Tất cả các model Gemini đều không hoạt động. Vui lòng kiểm tra lại API Key!")
+                        return
+
+                    parsed_items = re.findall(r"x(\d+)\s+(.+)", response_text, re.IGNORECASE)
+                    for qty, item_name in parsed_items:
+                        qty = int(qty)
+                        item_name = item_name.strip().title()
+                        
+                        inventory[item_name] = inventory.get(item_name, 0) + qty
+                        user_inv[item_name] = user_inv.get(item_name, 0) + qty
+                        details.append(f"🟢 **+{qty}** {item_name}")
         else:
             items = re.findall(r"x(\d+)\s+(.+)", message.content, re.IGNORECASE)
             if items:
