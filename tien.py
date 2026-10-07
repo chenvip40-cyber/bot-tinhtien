@@ -34,7 +34,6 @@ async def start_web_server():
 TOKEN = os.getenv('DISCORD_TOKEN')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
-# ĐÃ SỬA ID KÊNH BACKUP CỦA ANH VÀO ĐÂY DIRECTLY:
 BACKUP_CHANNEL_ID = int(os.getenv('BACKUP_CHANNEL_ID', '1557240142953975930')) 
 
 client = None
@@ -46,6 +45,38 @@ intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
 DATA_FILE = 'inventory_data.json'
+
+# Prompt AI chuyên đọc túi đồ / kho / cốp xe trong GTA5 Roleplay
+GTA5_INVENTORY_PROMPT = """
+Bạn là hệ thống kiểm đếm túi đồ trong game GTA5 Roleplay.
+Hãy nhìn vào từng ô vật phẩm trong ảnh túi đồ và liệt kê chính xác TÊN VẬT PHẨM cùng SỐ LƯỢNG.
+
+Quy tắc phân tích từng ô:
+1. SỐ LƯỢNG: Chỉ lấy con số nguyên nằm ở GÓC DƯỚI BÊN PHẢI mỗi ô (Ví dụ: 7, 24, 31, 16). Tuyệt đối BỎ QUA con số trọng lượng có chữ 'kg' hoặc con số ở góc trên bên trái (như 3.50, 12.00, 15.50, 8.00). Nếu không thấy số lượng ở góc dưới thì mặc định là 1.
+2. TÊN VẬT PHẨM (Đọc chữ ghi trên ô hoặc phân biệt theo biểu tượng/màu sắc):
+   - Nếu ô có ghi chữ rõ ràng (như "Đá thô", "Quặng sắt", "Quặng vàng", "Quặng bạc", "Quặng đồng", "Quặng thiếc"): Lấy đúng tên đó.
+   - Thỏi màu vàng kim / vàng sáng: Thỏi vàng
+   - Thỏi màu xám mịn / thép: Thỏi sắt
+   - Thỏi màu đồng / cam đỏ: Thỏi đồng
+   - Thỏi màu bạc sáng / nhám: Thỏi bạc
+   - Thỏi màu xám bạc thô: Thỏi thiếc
+   - Cục đá màu vàng: Quặng vàng
+   - Cục đá màu đỏ / nâu: Quặng sắt
+   - Cục đá màu trắng / bạc: Quặng bạc
+   - Cục đá màu xám / đen: Đá thô
+   - Cục đá màu đồng: Quặng đồng
+   - Viên kim cương lấp lánh: Kim Cương
+
+Yêu cầu đầu ra:
+Chỉ trả về danh sách theo đúng cú pháp (mỗi món 1 dòng, tuyệt đối KHÔNG thêm lời chào hay giải thích):
+x[số lượng] [Tên vật phẩm]
+
+Ví dụ:
+x7 Thỏi vàng
+x24 Thỏi sắt
+x31 Thỏi đồng
+x16 Thỏi bạc
+"""
 
 # =========================================================
 # 2. XỬ LÝ DỮ LIỆU JSON & BACKUP AUTOMATION
@@ -62,7 +93,6 @@ def load_data():
 def save_data(data):
     with open(DATA_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
-    # Tự động gửi backup lên Discord nếu có cấu hình kênh
     if bot.is_ready() and BACKUP_CHANNEL_ID != 0:
         bot.loop.create_task(backup_data_to_discord())
 
@@ -275,10 +305,18 @@ async def kho_ca_nhan_cmd(ctx, *, name: str = None):
 async def bang_kho_cmd(ctx):
     data = load_data()
     user_invs = data.get("user_inventories", {})
+    prices = data.get("prices", {})
     
     if not user_invs:
         await ctx.send("📋 Chưa có dữ liệu đóng góp kho cá nhân nào!")
         return
+
+    total_guild_val = 0
+    user_vals = {}
+    for member, items in user_invs.items():
+        m_val = sum(qty * prices.get(k, 0) for k, qty in items.items())
+        user_vals[member] = m_val
+        total_guild_val += m_val
 
     embed = discord.Embed(
         title="📊 TỔNG HỢP KHO CÁ NHÂN THÀNH VIÊN",
@@ -286,10 +324,16 @@ async def bang_kho_cmd(ctx):
     )
     
     for user_name, inv in user_invs.items():
-        items_summary = [f"{item}: `x{qty}`" for item, qty in inv.items() if qty > 0]
-        val_text = ", ".join(items_summary) if items_summary else "*(Kho trống)*"
-        embed.add_field(name=f"👤 {user_name}", value=val_text, inline=False)
+        items_summary = [f"**{item}**: `x{qty}`" for item, qty in inv.items() if qty > 0]
+        val_text = ", ".join(items_summary) if items_summary else "*(Đã xuất bán hết)*"
         
+        m_val = user_vals.get(user_name, 0)
+        pct = (m_val / total_guild_val * 100) if total_guild_val > 0 else 0
+        price_note = f"\n💰 Quy đổi: **{m_val:,} VNĐ** *({pct:.1f}% tổng kho)*" if m_val > 0 else ""
+        
+        embed.add_field(name=f"👤 {user_name}", value=f"{val_text}{price_note}", inline=False)
+        
+    embed.set_footer(text=f"💵 Tổng giá trị đóng góp toàn team: {total_guild_val:,} VNĐ")
     await ctx.send(embed=embed)
 
 @bot.command(name='capnhatgia')
@@ -354,13 +398,12 @@ async def on_message(message):
                     await message.add_reaction("🔍")
                     image_bytes = await attachment.read()
                     img = Image.open(io.BytesIO(image_bytes))
-                    prompt = "Liệt kê chính xác số lượng vật tư trong ảnh túi đồ theo định dạng: x[số] [Tên vật tư]"
                     try:
                         response = client.models.generate_content(
                             model='gemini-2.5-flash',
-                            contents=[prompt, img]
+                            contents=[GTA5_INVENTORY_PROMPT, img]
                         )
-                        parsed_items = re.findall(r"x(\d+)\s+(.+)", response.text)
+                        parsed_items = re.findall(r"x(\d+)\s+(.+)", response.text, re.IGNORECASE)
                         for qty, item_name in parsed_items:
                             qty = int(qty)
                             item_name = item_name.strip().title()
@@ -371,7 +414,7 @@ async def on_message(message):
                     except Exception as e:
                         await message.reply(f"❌ Lỗi quét ảnh: {e}")
         else:
-            items = re.findall(r"x(\d+)\s+(.+)", message.content)
+            items = re.findall(r"x(\d+)\s+(.+)", message.content, re.IGNORECASE)
             if items:
                 for qty, item_name in items:
                     qty = int(qty)
@@ -397,72 +440,4 @@ async def on_message(message):
 
     # 3. KÊNH BÁN SẢN PHẨM / TRỪ KHO (#ban-san-pham)
     elif channel_name == 'ban-san-pham':
-        data = load_data()
-        inventory = data.setdefault("inventory", {})
-        prices = data.get("prices", {})
-        items = re.findall(r"x(\d+)\s+(.+)", message.content)
-        
-        details = []
-        errors = []
-        total_earned = 0
-
-        if items:
-            for qty, item_name in items:
-                qty = int(qty)
-                item_name = item_name.strip().title()
-                current_qty = inventory.get(item_name, 0)
-
-                if current_qty < qty:
-                    errors.append(f"❌ **{item_name}**: Kho còn `{current_qty}`, không đủ xuất `{qty}`!")
-                else:
-                    inventory[item_name] = current_qty - qty
-                    unit_p = prices.get(item_name, 0)
-                    earned = unit_p * qty
-                    total_earned += earned
-                    
-                    price_note = f" *(Thu: {earned:,}đ)*" if unit_p > 0 else ""
-                    details.append(f"🔴 **-{qty}** {item_name} {price_note} | Tồn kho mới: `{inventory[item_name]}`")
-
-            if details:
-                save_data(data)
-                await message.add_reaction("💸")
-                embed = discord.Embed(
-                    title="📤 XÁC NHẬN PHIẾU XUẤT BÁN KHO",
-                    color=discord.Color.orange()
-                )
-                embed.add_field(name="👤 Người thực hiện", value=message.author.mention, inline=True)
-                embed.add_field(name="🕒 Thời gian", value=f"`{now_str}`", inline=True)
-                embed.add_field(name="📦 Chi tiết xuất kho", value="\n".join(details), inline=False)
-                
-                if total_earned > 0:
-                    embed.add_field(
-                        name="💵 TỔNG TIỀN THU VỀ", 
-                        value=f"```yaml\n+ {total_earned:,} VNĐ\n```", 
-                        inline=False
-                    )
-                if errors:
-                    embed.add_field(name="⚠️ Lỗi tồn kho", value="\n".join(errors), inline=False)
-                    
-                await message.reply(embed=embed)
-                await update_prices_from_channel(message.guild)
-                await update_kho_channel(message.guild)
-            elif errors:
-                await message.reply("\n".join(errors))
-
-    # 4. KÊNH CHECK KHO (#check-kho)
-    elif channel_name == 'check-kho':
-        if not message.content.startswith('!'):
-            data = load_data()
-            inventory = data.get("inventory", {})
-            prices = data.get("prices", {})
-            embed = create_kho_embed(inventory, prices)
-            await message.reply(embed=embed)
-
-# =========================================================
-# 7. KHỞI CHẠY BOT
-# =========================================================
-if __name__ == '__main__':
-    if TOKEN:
-        bot.run(TOKEN)
-    else:
-        print("❌ Lỗi: Chưa cấu hình DISCORD_TOKEN!")
+        data = load
