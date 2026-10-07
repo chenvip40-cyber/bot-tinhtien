@@ -14,26 +14,25 @@ from aiohttp import web
 # 0. KHỞI TẠO WEB SERVER GIẢ LẬP ĐỂ GIỮ PORT RENDER (24/7)
 # =========================================================
 async def handle_ping(request):
-    return web.Response(text="Bot Discord đang hoạt động 24/7!")
+    return web.Response(text="Bot Discord đang hoạt động 24/7 trên Render!")
 
 async def start_web_server():
     app = web.Application()
     app.router.add_get('/', handle_ping)
     app.router.add_get('/ping', handle_ping)
-    runner = web.AppRunner(app)
-    await runner.setup()
     
     port = int(os.environ.get("PORT", 8080))
+    runner = web.AppRunner(app)
+    await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
-    print(f"✅ Web Server đã khởi chạy thành công trên Port {port}")
+    print(f"✅ Web Server đã lắng nghe trên Port {port}")
 
 # =========================================================
 # 1. CẤU HÌNH THÔNG TIN BOT & BACKUP
 # =========================================================
 TOKEN = os.getenv('DISCORD_TOKEN')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
-
 BACKUP_CHANNEL_ID = int(os.getenv('BACKUP_CHANNEL_ID', '1557240142953975930')) 
 
 client = None
@@ -277,9 +276,8 @@ async def update_kho_channel(guild):
 # =========================================================
 @bot.event
 async def on_ready():
-    await start_web_server()
     await restore_data_from_discord()
-    print(f'✅ Bot {bot.user.name} đã sẵn sàng phục vụ!')
+    print(f'✅ Bot {bot.user.name} đã đăng nhập thành công vào Discord!')
 
 @bot.command(name='checkkho')
 async def check_kho_cmd(ctx):
@@ -440,4 +438,104 @@ async def on_message(message):
 
     # 3. KÊNH BÁN SẢN PHẨM / TRỪ KHO (#ban-san-pham)
     elif channel_name == 'ban-san-pham':
-        data = load
+        data = load_data()
+        inventory = data.setdefault("inventory", {})
+        user_inventories = data.setdefault("user_inventories", {})
+        prices = data.get("prices", {})
+        items = re.findall(r"x(\d+)\s+(.+)", message.content, re.IGNORECASE)
+        
+        details = []
+        errors = []
+        total_earned = 0
+
+        if items:
+            for qty, item_name in items:
+                qty = int(qty)
+                item_name = item_name.strip().title()
+                current_qty = inventory.get(item_name, 0)
+
+                if current_qty < qty:
+                    errors.append(f"❌ **{item_name}**: Kho còn `{current_qty}`, không đủ xuất `{qty}`!")
+                else:
+                    inventory[item_name] = current_qty - qty
+                    
+                    needed_to_deduct = qty
+                    deduct_logs = []
+
+                    for u_name, u_inv in user_inventories.items():
+                        if item_name in u_inv and u_inv[item_name] > 0:
+                            take = min(needed_to_deduct, u_inv[item_name])
+                            u_inv[item_name] -= take
+                            needed_to_deduct -= take
+                            
+                            remains = u_inv[item_name]
+                            deduct_logs.append(f"   └─ 👤 **{u_name}**: -{take} {item_name} *(Còn {remains})*")
+                            
+                            if u_inv[item_name] == 0:
+                                del u_inv[item_name]
+                            if needed_to_deduct <= 0:
+                                break
+
+                    unit_p = prices.get(item_name, 0)
+                    earned = unit_p * qty
+                    total_earned += earned
+                    
+                    price_note = f" *(Thu: {earned:,}đ)*" if unit_p > 0 else ""
+                    item_detail = f"🔴 **-{qty}** {item_name}{price_note} | Tồn kho mới: `{inventory[item_name]}`"
+                    if deduct_logs:
+                        item_detail += "\n" + "\n".join(deduct_logs)
+                    
+                    details.append(item_detail)
+
+            if details:
+                save_data(data)
+                await message.add_reaction("💸")
+                embed = discord.Embed(
+                    title="📤 XÁC NHẬN PHIẾU XUẤT BÁN KHO",
+                    color=discord.Color.orange()
+                )
+                embed.add_field(name="👤 Người thực hiện", value=message.author.mention, inline=True)
+                embed.add_field(name="🕒 Thời gian", value=f"`{now_str}`", inline=True)
+                embed.add_field(name="📦 Chi tiết xuất kho", value="\n\n".join(details), inline=False)
+                
+                if total_earned > 0:
+                    embed.add_field(
+                        name="💵 TỔNG TIỀN THU VỀ", 
+                        value=f"```yaml\n+ {total_earned:,} VNĐ\n```", 
+                        inline=False
+                    )
+                if errors:
+                    embed.add_field(name="⚠️ Lỗi tồn kho", value="\n".join(errors), inline=False)
+                    
+                await message.reply(embed=embed)
+                await update_prices_from_channel(message.guild)
+                await update_kho_channel(message.guild)
+            elif errors:
+                await message.reply("\n".join(errors))
+
+    # 4. KÊNH CHECK KHO (#check-kho)
+    elif channel_name == 'check-kho':
+        if not message.content.startswith('!'):
+            data = load_data()
+            inventory = data.get("inventory", {})
+            prices = data.get("prices", {})
+            embed = create_kho_embed(inventory, prices)
+            await message.reply(embed=embed)
+
+# =========================================================
+# 7. KHỞI CHẠY ĐỒNG THỜI BOT & WEB SERVER DÀNH CHO RENDER
+# =========================================================
+async def main():
+    if not TOKEN:
+        print("❌ Lỗi: Chưa cấu hình DISCORD_TOKEN!")
+        return
+        
+    # Mở Web Server ngay lập tức để Render detect port
+    await start_web_server()
+    
+    # Chạy Bot Discord
+    async with bot:
+        await bot.start(TOKEN)
+
+if __name__ == '__main__':
+    asyncio.run(main())
