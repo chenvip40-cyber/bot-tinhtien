@@ -414,8 +414,13 @@ async def on_message(message):
                     img = Image.open(io.BytesIO(image_bytes))
                     
                     response_text = ""
-                    # Danh sách các tên model chuẩn mới nhất của Google Gemini
-                    models_to_try = ['gemini-2.5-flash', 'gemini-2.5-flash', 'gemini-2.5-pro']
+                    # Đưa gemini-3.8-flash lên ưu tiên đầu tiên theo đúng gợi ý của API
+                    models_to_try = [
+                        'gemini-3.8-flash', 
+                        'gemini-3.1-pro-preview', 
+                        'gemini-2.5-flash', 
+                        'gemini-2.0-flash'
+                    ]
                     last_err = None
                     
                     for m_name in models_to_try:
@@ -426,6 +431,7 @@ async def on_message(message):
                             )
                             if res and res.text:
                                 response_text = res.text
+                                print(f"✅ Đã phân tích ảnh thành công bằng model: {m_name}")
                                 break
                         except Exception as err:
                             last_err = err
