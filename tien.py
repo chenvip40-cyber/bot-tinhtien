@@ -330,4 +330,4 @@ async def on_message(message):
 # =========================================================
 # 7. KHỞI CHẠY BOT
 # =========================================================
-bot.run('MTU1NzE4NDg1NjQyNzk5MTE4MQ.GE-7u7.XX4hJ-jTMqeIiSLutX6SLVgMfBiGuenhZLcI18')
+bot.run('MTU1NzE4NDg1NjQyNzk5MTE4MQ.GYqNyk.yoS9AxaubO7jfSYunI1n3g7H242rDkhiA4Uvm8')
