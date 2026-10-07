@@ -11,7 +11,7 @@ import asyncio
 from aiohttp import web
 
 # =========================================================
-# 0. KHỞI TẠO WEB SERVER GIẢ LẬP ĐỂ GIỮ PORT RENDER
+# 0. KHỞI TẠO WEB SERVER GIẢ LẬP ĐỂ GIỮ PORT RENDER (24/7)
 # =========================================================
 async def handle_ping(request):
     return web.Response(text="Bot Discord đang hoạt động 24/7!")
@@ -29,10 +29,13 @@ async def start_web_server():
     print(f"✅ Web Server đã khởi chạy thành công trên Port {port}")
 
 # =========================================================
-# 1. CẤU HÌNH THÔNG TIN BOT
+# 1. CẤU HÌNH THÔNG TIN BOT & BACKUP
 # =========================================================
 TOKEN = os.getenv('DISCORD_TOKEN')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+
+# ĐÃ SỬA ID KÊNH BACKUP CỦA ANH VÀO ĐÂY DIRECTLY:
+BACKUP_CHANNEL_ID = int(os.getenv('BACKUP_CHANNEL_ID', '1557240142953975930')) 
 
 client = None
 if GEMINI_API_KEY:
@@ -45,7 +48,7 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 DATA_FILE = 'inventory_data.json'
 
 # =========================================================
-# 2. XỬ LÝ DỮ LIỆU JSON & ĐỔI GIÁ
+# 2. XỬ LÝ DỮ LIỆU JSON & BACKUP AUTOMATION
 # =========================================================
 def load_data():
     if os.path.exists(DATA_FILE):
@@ -59,6 +62,35 @@ def load_data():
 def save_data(data):
     with open(DATA_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
+    # Tự động gửi backup lên Discord nếu có cấu hình kênh
+    if bot.is_ready() and BACKUP_CHANNEL_ID != 0:
+        bot.loop.create_task(backup_data_to_discord())
+
+async def backup_data_to_discord():
+    channel = bot.get_channel(BACKUP_CHANNEL_ID)
+    if channel and os.path.exists(DATA_FILE):
+        try:
+            with open(DATA_FILE, 'rb') as f:
+                await channel.send(
+                    content=f"💾 **Auto-Backup Data** - {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}",
+                    file=discord.File(f, DATA_FILE)
+                )
+        except Exception as e:
+            print(f"❌ Lỗi Auto-Backup: {e}")
+
+async def restore_data_from_discord():
+    if BACKUP_CHANNEL_ID == 0:
+        return
+    await bot.wait_until_ready()
+    channel = bot.get_channel(BACKUP_CHANNEL_ID)
+    if channel:
+        async for msg in channel.history(limit=10):
+            if msg.attachments:
+                for att in msg.attachments:
+                    if att.filename == DATA_FILE:
+                        await att.save(DATA_FILE)
+                        print("✅ Đã khôi phục dữ liệu kho từ kênh Backup Discord!")
+                        return
 
 def parse_price(price_str):
     price_str = price_str.lower().strip()
@@ -75,7 +107,6 @@ def parse_price(price_str):
     return 0
 
 def extract_member_name(message_content, author_name):
-    # Tìm dòng dạng "Tên: Trạng" hoặc "Ten: Trang"
     match = re.search(r'(?:Tên|Ten)\s*:\s*([^\n\r]+)', message_content, re.IGNORECASE)
     if match:
         return match.group(1).strip().title()
@@ -217,6 +248,7 @@ async def update_kho_channel(guild):
 @bot.event
 async def on_ready():
     await start_web_server()
+    await restore_data_from_discord()
     print(f'✅ Bot {bot.user.name} đã sẵn sàng phục vụ!')
 
 @bot.command(name='checkkho')
@@ -311,7 +343,6 @@ async def on_message(message):
         inventory = data.setdefault("inventory", {})
         user_inventories = data.setdefault("user_inventories", {})
         
-        # Tự động trích xuất tên người nhập (Ví dụ từ dòng "Tên: Trạng")
         member_name = extract_member_name(message.content, message.author.display_name)
         user_inv = user_inventories.setdefault(member_name, {})
         
@@ -334,7 +365,6 @@ async def on_message(message):
                             qty = int(qty)
                             item_name = item_name.strip().title()
                             
-                            # Cộng vào kho tổng & kho cá nhân
                             inventory[item_name] = inventory.get(item_name, 0) + qty
                             user_inv[item_name] = user_inv.get(item_name, 0) + qty
                             details.append(f"🟢 **+{qty}** {item_name}")
@@ -347,7 +377,6 @@ async def on_message(message):
                     qty = int(qty)
                     item_name = item_name.strip().title()
                     
-                    # Cộng vào kho tổng & kho cá nhân
                     inventory[item_name] = inventory.get(item_name, 0) + qty
                     user_inv[item_name] = user_inv.get(item_name, 0) + qty
                     details.append(f"🟢 **+{qty}** {item_name}")
@@ -436,4 +465,4 @@ if __name__ == '__main__':
     if TOKEN:
         bot.run(TOKEN)
     else:
-        print("❌ Lỗi: Chưa cấu hình DISCORD_TOKEN trong Environment Variables của Render!")
+        print("❌ Lỗi: Chưa cấu hình DISCORD_TOKEN!")
