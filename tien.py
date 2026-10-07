@@ -414,20 +414,25 @@ async def on_message(message):
                     img = Image.open(io.BytesIO(image_bytes))
                     
                     response_text = ""
-                    # Thử lần lượt các tên model của Gemini
-                    for model_name in ['gemini-2.5-flash', 'gemini-2.5-flash']:
+                    # Danh sách các tên model chuẩn mới nhất của Google Gemini
+                    models_to_try = ['gemini-2.5-flash', 'gemini-2.5-flash', 'gemini-2.5-pro']
+                    last_err = None
+                    
+                    for m_name in models_to_try:
                         try:
-                            response = client.models.generate_content(
-                                model=model_name,
+                            res = client.models.generate_content(
+                                model=m_name,
                                 contents=[GTA5_INVENTORY_PROMPT, img]
                             )
-                            response_text = response.text
-                            break
-                        except Exception as e_model:
-                            print(f"⚠️ Thử model {model_name} thất bại: {e_model}")
+                            if res and res.text:
+                                response_text = res.text
+                                break
+                        except Exception as err:
+                            last_err = err
+                            print(f"⚠️ Model {m_name} không khả dụng: {err}")
                     
                     if not response_text:
-                        await message.reply("❌ Lỗi: Tất cả các model Gemini đều không hoạt động. Vui lòng kiểm tra lại API Key!")
+                        await message.reply(f"❌ Lỗi gọi Gemini API: `{last_err}`")
                         return
 
                     parsed_items = re.findall(r"x(\d+)\s+(.+)", response_text, re.IGNORECASE)
